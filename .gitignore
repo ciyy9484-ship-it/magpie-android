@@ -1,0 +1,11 @@
+.alma-snapshots/
+tmp/
+outputs/
+work/android/build/
+work/android/lib/
+*.keystore
+*.jks
+*.idsig
+*.apk
+.DS_Store
+work/android/res/mipmap-xxxhdpi/ic_launcher.png
