@@ -4,6 +4,10 @@
 
 The official `magpie-cli-android-arm64` build, wrapped in a tiny Android app that runs it as a persistent daemon behind a WebView.
 
+## 下载
+
+APK 在 [Releases](https://github.com/ciyy9484-ship-it/magpie-android/releases) 里：`magpie-android-arm64.apk`（arm64，Android 8.0+）。
+
 ## 它做什么
 
 - APK 内置官方 `magpie-cli-android-arm64`（放进 `lib/arm64-v8a/libmagpie-core.so`，`extractNativeLibs=true` 才能在 Android 10+ 执行）
