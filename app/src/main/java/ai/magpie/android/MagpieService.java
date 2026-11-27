@@ -133,6 +133,11 @@ public class MagpieService extends Service {
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
+        // intent == null: 系统重启了服务（START_STICKY）。用户按过停止就别复活。
+        if (intent == null && !Core.prefs(this).getBoolean("shouldRun", false)) {
+            stopSelf();
+            return START_NOT_STICKY;
+        }
         String action = intent == null ? ACTION_START : intent.getAction();
         if (ACTION_STOP.equals(action)) {
             Core.prefs(this).edit().putBoolean("shouldRun", false).apply();

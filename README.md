@@ -1,63 +1,56 @@
 # magpie-android
 
-把 [yetone/magpie](https://github.com/yetone/magpie)（把你的所有 AI 订阅计划汇成一个池子的本地网关）打包成一个**安卓 APK**，用 root 守护进程常驻，避免被国产 ROM 杀掉后台。
-
-The official `magpie-cli-android-arm64` build, wrapped in a tiny Android app that runs it as a persistent daemon behind a WebView.
+把 [yetone/magpie](https://github.com/yetone/magpie)（把你的所有 AI 订阅计划汇成一个池子的本地网关）打包成**安卓 App**：界面用 [Miuix](https://github.com/compose-miuix-ui/miuix) 做成 HyperOS/MIUI 观感，守护进程用 root 常驻，避免被国产 ROM 杀后台。
 
 ## 下载
 
-APK 在 [Releases](https://github.com/ciyy9484-ship-it/magpie-android/releases) 里：`magpie-android-arm64.apk`（arm64，Android 8.0+）。
+APK 在 [Releases](https://github.com/ciyy9484-ship-it/magpie-android/releases) 里：`magpie-android-arm64.apk`（**arm64**，Android 8.0+）。
 
 ## 它做什么
 
-- APK 内置官方 `magpie-cli-android-arm64`（放进 `lib/arm64-v8a/libmagpie-core.so`，`extractNativeLibs=true` 才能在 Android 10+ 执行）
-- 启动时拉起 `magpie serve --web=127.0.0.1:3430`，网关在 `3425`
-- **root 模式**：二进制拷到 `/data/adb/magpie/magpie`（root 管理器目录，不会被系统清），用 `su` 起独立进程，`oom_score_adj=-1000`，脱离 App 的 cgroup —— 强杀 App 也不影响它
+- APK 把官方 `magpie-cli-android-arm64` 放进 `jniLibs/arm64-v8a/libmagpie-core.so`，`extractNativeLibs=true` 才能在 Android 10+ 执行
+- 启动后跑 `magpie serve --web=127.0.0.1:3430`，网关在 `3425`
+- **root 模式**：二进制拷到 `/data/adb/magpie/magpie`，用 `su` 起独立进程，`oom_score_adj=-1000`，脱离 App 的 cgroup —— 强杀 App 不影响它
 - **普通模式**（没有 root）：前台服务 + 通知，能用但会被 ROM 杀
-- 守护脚本 `while true` 循环，进程挂了 3 秒自愈；App 端另有看门狗
+- 守护脚本 `while true`，进程挂了 3 秒自愈；App 端还有看门狗
 - 开机自启：root 写 `/data/adb/service.d/99-magpie.sh`，否则走系统开机广播
-- 界面是 WebView 打开 magpie 自己的网页，配置齐全（供应商 / 路由组 / 用量 / 插件 / MCP）
-
-## 需求
-
-- Android 8.0+（`minSdk 24`）、**arm64** 设备
-- root（Magisk / KernelSU / APatch）可选但要"杀不死"就必须有
+- 界面是 WebView 打开 magpie 自己的网页（供应商 / 路由组 / 用量 / 插件 / MCP 全在里面）
 
 ## 构建
 
 ```bash
-cd work/android
-VERSION=0.1.4936 bash build.sh     # 自动下载该 release 的 android 二进制
-REV=2 VERSION=0.1.4936 bash build.sh   # 同一版本重打包时递增 REV
+./scripts/fetch-payload.sh        # 下载 104MB 二进制 + 图标（不进仓库）
+./gradlew :app:assembleRelease \
+  -PMAGPIE_VERSION=0.1.4868 -PREV=0
+# 产物：app/build/outputs/apk/release/app-release.apk
 ```
 
-产物在 `outputs/magpie-android-arm64.apk`。不需要 Gradle，脚本直接走 `aapt2 → javac → d8 → zipalign → apksigner`。
+要求 JDK 17+、Android SDK（`local.properties` 里写 `sdk.dir=...`，需要 platform 37 + build-tools 36）。
+版本号规则：`versionCode = major*1e6 + minor*1e4 + patch*10 + REV`，跟随 magpie 官方 release，保证覆盖安装是升级。
 
-依赖：
-- JDK（`D:/Java` 或改 `build.sh` 里的 `KEYTOOL`）
-- Android build-tools + platform，默认找 `/tmp/sdk/android-16`（build-tools 36.1）和 `/tmp/sdk/android-35/android.jar`
+**签名**：密钥不进仓库。想复用自己的签名，把 keystore 放 `keystore/magpie.keystore`，密码/别名用 `-PMAGPIE_KEYSTORE_PASS=` 等属性覆盖；没有 keystore 时 release 构建不签名。
 
-> 签名密钥 `work/android/magpie.keystore` **不在仓库里**。自己构建会用新密钥，所以无法覆盖安装别人构建的同包名 APK（要先卸载，配置会丢）。
+技术栈：Kotlin 2.4 + Jetpack Compose + AGP 9 + Miuix 0.9.2（`compileSdk 37`，`minSdk 24`，`targetSdk 34`）。
 
 ## 更新
 
 - 有 root：App 里「检查更新」→「更新 magpie」，走 `magpie update` 原位替换守护二进制
 - 没有 root：重新构建 APK 覆盖安装（配置在 App 私有目录，覆盖安装保留）
-- 更新后不会被 APK 内置的旧版二进制回滚：`installRootBinary` 先比较版本号
-
-## 踩过的坑（值得记下来）
-
-- **Android 11+ 要求 `resources.arsc` 不压缩且 4 字节对齐**（targetSdk≥30），否则装不上，报"解析包时出现问题"
-- **主线程连 localhost socket 会抛 `NetworkOnMainThreadException`**：`127.0.0.1` 也不例外。状态探测必须放后台线程，否则会误判"没起来"，看门狗把活着的守护反复杀掉
-- **Android 14 禁止后台广播接收器 `startForegroundService`**（`code:DENIED`），只能从 Activity 启；`BOOT_COMPLETED` 是豁免的
-- 锁屏（PIN）时 `screencap` 全黑是安全锁屏挡的，不是 bug
-- `adb forward` 转发大响应体会得到空 body（headers 正常），别用它判断服务端
-- build-tools 34 的 d8 8.2 对 javac 21 生成的类文件会 NPE，用 36.x
+- 更新后不会被 APK 内置的旧二进制回滚：`installRootBinary` 先比版本号
 
 ## 插件 / MCP
 
 不用额外装运行时：magpie 会自己下载 Bun，官方有 `bun-linux-aarch64-android` 构建。首次使用约 90MB，走 GitHub。
 
+## 踩过的坑（都在代码注释里）
+
+- **`kill -9 -1` 会把整台手机打重启**：早期按 pid 文件杀进程，列表为空时拼出了 `kill -9 -1`，root 下等于杀光所有进程。现在只杀 `/proc/<pid>/cmdline` 里验证过是 magpie 的进程，pkill 用 `libmagpie[-]core.so` 这种写法避免匹配到自己
+- **Android 11+ 要求 `resources.arsc` 不压缩且 4 字节对齐**
+- **主线程连 localhost socket 会抛 `NetworkOnMainThreadException`**：状态探测必须放后台线程，否则看门狗会把活着的守护反复杀掉
+- **AGP 9 内置 Kotlin**：不能再 apply `org.jetbrains.kotlin.android`
+- **不要给"以 root 执行的脚本"所在目录开 0777**：`umask 077` + 只 chown 属主
+- 用户输入（代理）拼进 shell 命令前要白名单校验 + 单引号转义
+
 ## 许可
 
-本项目只是壳。`magpie` 本体是 [MIT](https://github.com/yetone/magpie/blob/main/LICENSE)，版权归 yetone；APK 里打包的是它的官方 release 产物。
+壳是 MIT（见 [LICENSE](LICENSE)）。`magpie` 本体是 [MIT](https://github.com/yetone/magpie/blob/main/LICENSE)，版权归 yetone；APK 里打包的是它的官方 release 产物。界面组件来自 [Miuix](https://github.com/compose-miuix-ui/miuix)（Apache-2.0）。

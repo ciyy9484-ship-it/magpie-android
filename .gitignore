@@ -1,11 +1,19 @@
+# 构建产物
+.gradle/
+build/
+app/build/
+local.properties
+*.apk
+*.idsig
+
+# 工具链/载荷：按需下载，不进仓库
+keystore/
+app/src/main/jniLibs/
+app/src/main/res/mipmap-xxxhdpi/ic_launcher.png
+
+# Alma 工作区
 .alma-snapshots/
 tmp/
 outputs/
-work/android/build/
-work/android/lib/
-*.keystore
-*.jks
-*.idsig
-*.apk
+work/
 .DS_Store
-work/android/res/mipmap-xxxhdpi/ic_launcher.png

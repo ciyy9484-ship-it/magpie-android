@@ -51,9 +51,13 @@ public class WebActivity extends android.app.Activity {
             cm.setAcceptThirdPartyCookies(web, true);
         } catch (Throwable ignored) {
         }
-        try {
-            WebView.setWebContentsDebuggingEnabled(true);
-        } catch (Throwable ignored) {
+        // 只在 debug 包里开 WebView 远程调试：发布包开着的话，任何能连 adb 的人
+        // 都能 attach 到页面，把供应商密钥全读走。
+        if (BuildConfig.DEBUG) {
+            try {
+                WebView.setWebContentsDebuggingEnabled(true);
+            } catch (Throwable ignored) {
+            }
         }
 
         web.setWebViewClient(new WebViewClient() {

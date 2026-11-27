@@ -156,17 +156,18 @@ public final class Core {
         s.append("export XDG_CACHE_HOME=\"$HOME/.cache\"\n");
         s.append("export MAGPIE_WEB_KEY=").append(webKey(c)).append("\n");
         s.append("export MAGPIE_ADDR=").append(gwAddr).append("\n");
-        s.append("export MAGPIE_PROXY=").append(proxy(c)).append("\n");
+        s.append("export MAGPIE_PROXY=").append(shq(safeProxy(c))).append("\n");
         s.append("export DO_NOT_TRACK=");
         s.append(prefs(c).getBoolean("telemetry", true) ? "0" : "1");
         s.append("\n");
         s.append("export PATH=/system/bin:/system/xbin:/data/adb/magisk:/data/adb/ksu/bin:$PATH\n");
         s.append("export TMPDIR=\"$PKG_DIR/tmp\"\n");
-        if (!proxy(c).isEmpty()) {
+        if (!safeProxy(c).isEmpty()) {
             s.append("export HTTP_PROXY=\"$MAGPIE_PROXY\"\n");
             s.append("export HTTPS_PROXY=\"$MAGPIE_PROXY\"\n");
         }
-        s.append("umask 0000\n");
+        // 守护以 root 跑：它写出来的东西绝不能落在别人能改的目录里
+        s.append("umask 077\n");
         s.append("mkdir -p \"$XDG_CONFIG_HOME\" \"$XDG_CACHE_HOME\" \"$TMPDIR\"\n");
         s.append("LOG=\"$PKG_DIR/daemon.log\"\n");
         if (rootMode) {
@@ -184,8 +185,11 @@ public final class Core {
         s.append("  p=$!\n");
         s.append("  echo $p > \"$PKG_DIR/magpie.pid\"\n");
         s.append("  echo -1000 > /proc/$p/oom_score_adj 2>/dev/null\n");
-        s.append("  chmod 0777 \"$PKG_DIR\" \"$LOG\" 2>/dev/null\n");
-        s.append("  chmod -R a+rwX \"$HOME\" 2>/dev/null\n");
+        // root 建的文件归 root，把属主还回 App，App 才读得到自己的日志
+        s.append("  app_uid=$(stat -c %u \"$PKG_DIR\" 2>/dev/null)\n");
+        s.append("  [ -n \"$app_uid\" ] && chown -R \"$app_uid\":\"$app_uid\" \"$HOME\" 2>/dev/null\n");
+        s.append("  [ -n \"$app_uid\" ] && chown \"$app_uid\":\"$app_uid\" \"$LOG\" 2>/dev/null\n");
+        s.append("  chmod 0644 \"$LOG\" \"$PKG_DIR\"/*.pid 2>/dev/null\n");
         s.append("  wait $p\n");
         s.append("  if [ -f \"$PKG_DIR/stop.flag\" ]; then break; fi\n");
         s.append("  echo \"[$(date '+%F %T')] magpie exited ($?), restarting in 3s\" >> \"$LOG\"\n");
@@ -374,36 +378,47 @@ public final class Core {
             if (markStopped) writeFile(stopFlag(c), "stop", "0644");
         } catch (IOException ignored) {
         }
-        List<String> pids = new ArrayList<>();
-        int p = readInt(pidFile(c));
-        if (p > 0) pids.add(String.valueOf(p));
-        int w = readInt(wrapperPidFile(c));
-        if (w > 0) pids.add(String.valueOf(w));
-
-        StringBuilder sh = new StringBuilder();
-        for (String pid : pids) sh.append("kill -9 ").append(pid).append(" 2>/dev/null; ");
-        sh.append("pkill -9 -f '/magpie/magpie' 2>/dev/null; ");
-        sh.append("pkill -9 -f 'libmagpie-core.so' 2>/dev/null; ");
-        sh.append("pkill -9 -f 'run-magpie.sh' 2>/dev/null; true");
-        exec(new String[]{"/system/bin/sh", "-c", sh.toString()}, 15000);
-
+        // 只杀确认真的是我们的进程。绝不按 pid 文件盲杀：pid 会被系统复用，
+        // root 下杀错一个就是整机重启（曾经拼出 `kill -9 -1`，等于杀光所有进程）。
+        StringBuilder kills = new StringBuilder();
+        for (int pid : new int[]{readInt(pidFile(c)), readInt(wrapperPidFile(c))}) {
+            if (pid > 1 && isMagpiePid(pid)) {
+                kills.append("kill -9 ").append(pid).append(" 2>/dev/null; ");
+            }
+        }
+        // 方括号是为了让 pkill 自己的命令行不匹配这个正则，否则它会先杀掉自己的父 shell
+        String byName = "pkill -9 -f 'libmagpie[-]core.so' 2>/dev/null; "
+                + "pkill -9 -f 'magpie[/]magpie serve' 2>/dev/null; "
+                + "pkill -9 -f 'run-magpie[.]sh' 2>/dev/null; true";
+        String cmd = kills + byName;
+        exec(new String[]{"/system/bin/sh", "-c", cmd}, 15000);
         if (isRoot()) {
-            String cmd = "kill -9 " + join(pids) + " 2>/dev/null; "
-                    + "pkill -9 -f '/magpie/magpie' 2>/dev/null; "
-                    + "pkill -9 -f 'run-magpie.sh' 2>/dev/null; true";
             exec(new String[]{"su", "-c", cmd}, 15000);
         }
         pidFile(c).delete();
         wrapperPidFile(c).delete();
     }
 
-    private static String join(List<String> l) {
-        StringBuilder b = new StringBuilder();
-        for (String s : l) {
-            if (b.length() > 0) b.append(' ');
-            b.append(s);
+    /** 这个 pid 真的是我们的进程吗？读不到 cmdline（比如系统进程）一律不碰。 */
+    private static boolean isMagpiePid(int pid) {
+        if (pid <= 1) return false;
+        java.io.RandomAccessFile r = null;
+        try {
+            r = new java.io.RandomAccessFile("/proc/" + pid + "/cmdline", "r");
+            byte[] buf = new byte[256];
+            int n = r.read(buf);
+            if (n <= 0) return false;
+            return new String(buf, 0, n, "UTF-8").contains("magpie");
+        } catch (Throwable t) {
+            return false;
+        } finally {
+            if (r != null) {
+                try {
+                    r.close();
+                } catch (IOException ignored) {
+                }
+            }
         }
-        return b.length() == 0 ? "-1" : b.toString();
     }
 
     // -------------------------------------------------------------- status
@@ -494,6 +509,19 @@ public final class Core {
         return lastRunning;
     }
 
+    /** 单引号包一个字符串给 shell 用。 */
+    public static String shq(String v) {
+        if (v == null) return "''";
+        return "'" + v.replace("'", "'" + (char) 92 + "''") + "'";
+    }
+
+    /** 代理只允许这些字符，别的一律当没填（防止被当成 shell 命令执行）。 */
+    public static String safeProxy(Context c) {
+        String p = proxy(c);
+        if (p.isEmpty()) return "";
+        return p.matches("[A-Za-z0-9:/._@%+\\-\\[\\]]+") ? p : "";
+    }
+
     /** One HTTP request with its answer summarised, for the self check. */
     public static String httpProbe(String url) {
         try {
@@ -552,13 +580,13 @@ public final class Core {
         if (!isRoot()) return null;
         prefs(c).edit().putBoolean("updating", true).apply();
         try {
-            String proxy = proxy(c);
+            String proxy = safeProxy(c);
         String before = exec(new String[]{"su", "-c", remoteBin() + " --version"}, 30000);
         step("正在更新 magpie（先停掉守护）…");
         // 先停掉守护再更新：避免更新过程中 wrapper 又把它拉起来
         stop(c, true);
         String cmd = remoteBin() + " update";
-        if (!proxy.isEmpty()) cmd += " --proxy " + proxy;
+            if (!proxy.isEmpty()) cmd += " --proxy " + shq(proxy);
         String out = exec(new String[]{"su", "-c", cmd}, 600000);
         String after = exec(new String[]{"su", "-c", remoteBin() + " --version"}, 30000);
         long a = versionNum(before), b = versionNum(after);
